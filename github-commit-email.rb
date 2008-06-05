@@ -1,4 +1,5 @@
 # Author:: Adam Jacob (<adam@hjksolutions.com>)
+# Additions:: W. Andrew Loe III (loe@onehub.com)
 # Copyright:: Copyright (c) 2008 HJK Solutions, LLC
 # License:: GNU General Public License version 2 or later
 # 
@@ -17,20 +18,19 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #
 
+require 'tempfile'
 require 'rubygems'
 require 'json'
-require 'open-uri'
+require 'merb-core'
+require 'merb-mailer'
 
 Merb::Config.use { |c|
-  c[:project] = "Example",
-  c[:mailto] = "<noreply@example.com>",
-  c[:mailfrom] = "<noreply@example.com>",
   c[:framework]           = {},
   c[:session_store]       = 'none',
-  c[:exception_details]   = true
+  c[:exception_details]   = true,
+  c[:mailto] = "<noreply@example.com>",
+  c[:mailfrom] = "<noreply@example.com>"
 }
-
-require "merb-mailer"
 
 Merb::Mailer.config = {
    :host   => 'localhost',
@@ -46,54 +46,59 @@ end
 class Commit < Merb::Controller
   
   def index
-    results =  "I accept github post-commits for #{Merb::Config[:project]}"
-    results << " and relay them to #{Merb::Config[:mailto]}.  POST to /commit."
+    results =  "I accept github post-commits"
+    results << " and relay them.  POST to /commit"
     results
-  end  
+  end
   
   def create
     ch = JSON.parse(params[:payload])
-    ch['commits'].each do |gitsha, commit|
-      subject = commit['message'].split("\n")[0]
-      body = <<-EOH
-Repository Name: #{ch['repository']['name']}
-Owner: #{ch['repository']['owner']['name']} (#{ch['repository']['owner']['email']})
-URL: #{ch['repository']['url']}
-Ref: #{ch['ref']}      
+
+    body = <<-EOH
+Commits to #{ch['repository']['name']} (#{ch['repository']['url']})
+Ref: #{ch['ref']} 
 
 EOH
+    ch['commits'].each do |gitsha, commit|
       body << <<-EOH
-#{gitsha}
-  Author: #{commit['author']['name']} (#{commit['author']['email']})
-  URL: #{commit['url']}
-  Timestamp: #{commit['timestamp']}
-  
-Commit Message:
+#{gitsha} by #{commit['author']['name']} (#{commit['author']['email']}) @ #{commit['timestamp']}
+#{commit['url']}
 
 #{commit['message']}
 
-Diff:
-
 EOH
-      begin
-        open(commit['url'] + ".diff") do |f|
-          f.each do |line|
-            body << line
-          end
-        end
-      rescue 
-        body << "Cannot fetch diff!\n\n#{$!}"
-        Merb.logger.debug("Exception: #{$!}")
-      end
-      m = Merb::Mailer.new(
-            :to => Merb::Config[:mailto],
-            :from => "Commit in #{ch['repository']['owner']['name']} #{ch['repository']['name']} #{Merb::Config[:mailfrom]}",
-            :subject => subject,
-            :text => body
-          )
-      m.deliver!
     end
-    "Commit Sent"
+
+    body << "git diff #{ch['before']} #{ch['after']}\n\n"
+
+    # Clone the repository if it doesn't exist.
+    if !File.exist?("/tmp/#{ch['repository']['name']}")
+      system "cd /tmp && git clone git@github.com:#{ch['repository']['owner']}/#{ch['repository']['name']}.git"
+    end
+
+    # Pull the repo.
+    system "cd /tmp/#{ch['repository']['name']} && git-pull"
+
+    # Pipe the diff to a text file and read it back.
+    diff = Tempfile.new('diff')
+    begin
+      diff.close
+      system("cd /tmp/#{ch['repository']['name']} && git diff #{ch['before']} #{ch['after']} > #{diff.path}")
+      result = File.read(diff.path)
+    ensure
+      diff.unlink
+    end
+
+    body << result
+
+    # Send the email.
+    m = Merb::Mailer.new(
+    :to => Merb::Config[:mailto],
+    :from => Merb::Config[:mailfrom],
+    :subject => "GitHub notice for #{ch['repository']['name']}",
+    :text => body
+    )
+    m.deliver!
+    Merb.logger.info("Commit Sent")
   end
 end
-
