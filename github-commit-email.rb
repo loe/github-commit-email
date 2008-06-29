@@ -33,9 +33,9 @@ Merb::Config.use { |c|
 }
 
 Merb::Mailer.config = {
-   :host   => 'localhost',
-   :port   => '25',
-   :domain => "commitbot" # the HELO domain provided by the client to the server
+  :host   => 'localhost',
+  :port   => '25',
+  :domain => "commitbot" # the HELO domain provided by the client to the server
 }
 
 Merb::Router.prepare do |r|
@@ -44,32 +44,18 @@ Merb::Router.prepare do |r|
 end
 
 class Commit < Merb::Controller
-  
+
   def index
     results =  "I accept github post-commits"
     results << " and relay them.  POST to /commit"
     results
   end
-  
+
   def create
     ch = JSON.parse(params[:payload])
 
-    body = <<-EOH
-Commits to #{ch['repository']['name']} (#{ch['repository']['url']})
-Ref: #{ch['ref']} 
-
-EOH
-    ch['commits'].each do |gitsha, commit|
-      body << <<-EOH
-#{gitsha} by #{commit['author']['name']} (#{commit['author']['email']}) @ #{commit['timestamp']}
-#{commit['url']}
-
-#{commit['message']}
-
-EOH
-    end
-
-    body << "git diff #{ch['before']} #{ch['after']}\n\n"
+    # Mark before so we can get diffs.
+    before = ch['before']
 
     # Clone the repository if it doesn't exist.
     if !File.exist?("/tmp/#{ch['repository']['name']}")
@@ -79,26 +65,44 @@ EOH
     # Pull the repo.
     system "cd /tmp/#{ch['repository']['name']} && git-pull"
 
-    # Pipe the diff to a text file and read it back.
-    diff = Tempfile.new('diff')
-    begin
-      diff.close
-      system("cd /tmp/#{ch['repository']['name']} && git diff #{ch['before']} #{ch['after']} > #{diff.path}")
-      result = File.read(diff.path)
-    ensure
-      diff.unlink
+    ch['commits'].each do |gitsha, commit|
+      subject = "#{commit['author']['name']} comitted to #{ch['repository']['name']}: #{commit['message']}"
+      body = <<-EOH
+      Commit to #{ch['repository']['name']} (#{ch['repository']['url']}) by #{commit['author']['name']} (#{commit['author']['email']}) @ #{commit['timestamp']}
+      Ref: #{ch['ref']}
+
+      #{gitsha} (#{commit['url']})
+
+      #{commit['message']}
+
+      EOH
+      body << "git diff #{before} #{gitsha}\n\n"
+
+      # Pipe the diff to a text file and read it back.
+      diff = Tempfile.new('diff')
+      begin
+        diff.close
+        system("cd /tmp/#{ch['repository']['name']} && git diff #{before} #{gitsha} > #{diff.path}")
+        result = File.read(diff.path)
+      ensure
+        diff.unlink
+      end
+
+      body << result
+
+      # bump the before for the next time through the loop.
+      before = gitsha
+
+      # Send the email.
+      m = Merb::Mailer.new(
+      :to => Merb::Config[:mailto],
+      :from => Merb::Config[:mailfrom],
+      :content_type => 'text/plain',
+      :subject => subject,
+      :text => body
+      )
+      m.deliver!
+      Merb.logger.info("#{Time.now}: #{gitsha} Sent")
     end
-
-    body << result
-
-    # Send the email.
-    m = Merb::Mailer.new(
-    :to => Merb::Config[:mailto],
-    :from => Merb::Config[:mailfrom],
-    :subject => "GitHub notice for #{ch['repository']['name']}",
-    :text => body
-    )
-    m.deliver!
-    Merb.logger.info("Commit Sent")
   end
 end
