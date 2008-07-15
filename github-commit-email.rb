@@ -66,23 +66,18 @@ class Commit < Merb::Controller
     system "cd /tmp/#{ch['repository']['name']} && git-pull"
 
     ch['commits'].each do |gitsha, commit|
-      subject = "#{commit['author']['name']} comitted to #{ch['repository']['name']}: #{commit['message']}"
+      first_line_of_commit_message = commit['message'].split('\n').first
+      subject = "#{commit['author']['name']} comitted to #{ch['repository']['name']}: #{first_line_of_commit_message}"
       body = <<-EOH
-      Commit to #{ch['repository']['name']} (#{ch['repository']['url']}) by #{commit['author']['name']} (#{commit['author']['email']}) @ #{commit['timestamp']}
-      Ref: #{ch['ref']}
+#{commit['url']}
 
-      #{gitsha} (#{commit['url']})
-
-      #{commit['message']}
-
-      EOH
-      body << "git diff #{before} #{gitsha}\n\n"
+EOH
 
       # Pipe the diff to a text file and read it back.
       diff = Tempfile.new('diff')
       begin
         diff.close
-        system("cd /tmp/#{ch['repository']['name']} && git diff #{before} #{gitsha} > #{diff.path}")
+        system("cd /tmp/#{ch['repository']['name']} && git show #{gitsha} > #{diff.path}")
         result = File.read(diff.path)
       ensure
         diff.unlink
@@ -90,16 +85,13 @@ class Commit < Merb::Controller
 
       body << result
 
-      # bump the before for the next time through the loop.
-      before = gitsha
-
       # Send the email.
       m = Merb::Mailer.new(
-      :to => Merb::Config[:mailto],
-      :from => Merb::Config[:mailfrom],
-      :content_type => 'text/plain',
-      :subject => subject,
-      :text => body
+        :to => Merb::Config[:mailto],
+        :from => Merb::Config[:mailfrom],
+        :subject => subject,
+        "Content-Type" => "text/plain; charset=utf-8",
+        :text => body
       )
       m.deliver!
       Merb.logger.info("#{Time.now}: #{gitsha} Sent")
