@@ -59,7 +59,7 @@ class Commit < Merb::Controller
  
     # Clone the repository if it doesn't exist.
     if !File.exist?("/tmp/#{ch['repository']['name']}")
-      system "cd /tmp && git clone git@github.com:#{ch['repository']['owner']}/#{ch['repository']['name']}.git"
+      system "cd /tmp && git clone git@github.com:#{ch['repository']['owner']['name']}/#{ch['repository']['name']}.git"
     end
   
     # Pull the repo.
